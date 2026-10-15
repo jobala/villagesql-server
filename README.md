@@ -53,6 +53,25 @@ The build also needs a C++20 compiler, CMake 3.14.6 or newer (3.19 on macOS),
 Bison 3.0.4 or newer, OpenSSL 3, and several development libraries. Step 2
 below installs all of them.
 
+To contribute a change, you also need clang-format for the linter,
+`./scripts/villint.sh`. Every pull request must pass the linter, so run it
+before each commit. Step 2 does not install clang-format. The linter needs one
+exact clang-format version, and it refuses any other. Homebrew and Linux
+package managers ship whatever version they currently carry, so do not install
+clang-format from them. Install the exact version with `pipx`:
+
+```bash
+# macOS with Homebrew
+brew install pipx
+
+# Linux (Ubuntu/Debian)
+sudo apt-get install pipx
+
+# Both
+pipx install "clang-format==22.1.*"
+pipx ensurepath   # adds ~/.local/bin to PATH in your shell startup file; open a new shell after
+```
+
 ### Build Steps (Linux & macOS)
 
 > **Note:** These steps are the same on Linux and macOS. Paths use `$HOME`
@@ -98,10 +117,10 @@ below installs all of them.
 
    ```bash
    # Standard build
-   cmake "$HOME/villagesql-server" -DWITH_SSL=system
+   cmake "$HOME/villagesql-server"
 
    # Or for a debug build (recommended for development)
-   cmake "$HOME/villagesql-server" -DWITH_DEBUG=1 -DWITH_SSL=system
+   cmake "$HOME/villagesql-server" -DWITH_DEBUG=1
    ```
 
 5. **Build:**
@@ -142,7 +161,7 @@ below installs all of them.
    bin/mysqld --user=root --gdb --datadir="$HOME/mysql-data/data" --basedir="$HOME/build/villagesql"
    ```
 
-   *Note: `--initialize-insecure` creates a root user with no password for development. The `--gdb` flag installs a signal handler that allows you to Ctrl-C to quit the server. For production, use `--initialize` instead (generates a temporary password) and refer to [MySQL 8.4 initialization documentation](https://dev.mysql.com/doc/refman/8.4/en/data-directory-initialization.html) for secure setup.*
+   *Note: `--initialize-insecure` creates a root user with no password for development. The `--gdb` flag unblocks `SIGINT` so you can Ctrl-C to quit the server; it also suppresses the crash backtrace and cancels `--core-file`. For production, use `--initialize` instead (generates a temporary password) and refer to [MySQL 8.4 initialization documentation](https://dev.mysql.com/doc/refman/8.4/en/data-directory-initialization.html) for secure setup.*
 
    **Setting up users and permissions:**
    ```sql
@@ -167,8 +186,8 @@ Verify your build with the test suite:
 # From your build directory
 cd "$HOME/build/villagesql"
 
-# Run all VillageSQL tests including sub-suites
-mysql-test/mysql-test-run.pl --do-suite=villagesql --parallel=auto
+# Run all VillageSQL tests including sub-suites (unit tests run separately)
+mysql-test/mysql-test-run.pl --do-suite=villagesql --nounit-tests --parallel=auto
 
 # Run a specific test
 mysql-test/mysql-test-run.pl villagesql.my_test_name
@@ -255,30 +274,31 @@ VillageSQL provides a C++ SDK and a Rust SDK for building high-performance exten
 
 ## Roadmap
 
-Priority items are listed below. The full roadmap can be found at [villagesql.com/roadmap](https://villagesql.com/roadmap).
-
-- [ ] **Custom Index Types:** Support for extension-defined index types. Standard B-tree indexing of custom-typed columns already works. ([#10](https://github.com/villagesql/villagesql-server/issues/10))
-- [ ] **Variable Length Custom Types:** Support for custom types with variable storage size. ([#13](https://github.com/villagesql/villagesql-server/issues/13))
-- [ ] **Extension Upgrades Without a Restart:** `ALTER EXTENSION <name> VERSION '<v>' AT RESTART` applies a version change at the next restart today; applying one to a running server does not. ([#11](https://github.com/villagesql/villagesql-server/issues/11), [#12](https://github.com/villagesql/villagesql-server/issues/12))
-- [ ] **Full Built-in Aggregate Support:** Investigating support for built-in aggregate functions (SUM, AVG, etc.) with custom types. COUNT(DISTINCT), MIN, and MAX work today. Extensions can implement custom aggregates via VDF Aggregates. ([#14](https://github.com/villagesql/villagesql-server/issues/14))
-- [ ] **Startup Install Flag:** Automatic extension installation on server startup. ([#17](https://github.com/villagesql/villagesql-server/issues/17))
-- [ ] **Windows Support:** Native Windows compilation and .dll support. ([#16](https://github.com/villagesql/villagesql-server/issues/16))
-- [ ] **Analytical Capabilities:** Embedded analytical engines (e.g., DuckDB integration).
-- [ ] **Fully-Managed Cloud Service:** VillageSQL as a managed database offering.
+The full roadmap is at [villagesql.com/roadmap](https://villagesql.com/roadmap).
 
 ## Troubleshooting
 
 ### Build Failures
 
 **OpenSSL not found:**
+
+Install the OpenSSL development package. cmake locates it without any further
+configuration.
+
 ```bash
 # macOS with Homebrew
 brew install openssl@3
-cmake "$HOME/villagesql-server" -DWITH_SSL=/opt/homebrew/opt/openssl@3
 
 # Linux (Ubuntu/Debian)
 sudo apt-get install libssl-dev
-cmake "$HOME/villagesql-server" -DWITH_SSL=system
+```
+
+On macOS you can instead name the OpenSSL directory. That builds a server which
+carries its own copy of the OpenSSL libraries, so it keeps working when Homebrew
+upgrades OpenSSL:
+
+```bash
+cmake "$HOME/villagesql-server" -DWITH_SSL="$(brew --prefix openssl@3)"
 ```
 
 **Bison version too old:**

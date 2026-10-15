@@ -80,8 +80,8 @@
 //     DEFAULT_STR_TYPE, DEFAULT_VDF_TYPE, DEFAULT_PARAM_TYPE(N),
 //     BAD_DEFAULT_LEN_TYPE.
 //
-//   Parameter-bound test types (see block comment further down):
-//     OVERSIZED_PARAM_TYPE(N).
+//   Parameter-bound and rewrite test types (see block comment further down):
+//     OVERSIZED_PARAM_TYPE(N), ADD_PARAM_TYPE(N), DROP_PARAM_TYPE(N).
 //
 //   Storage-size boundary test type (see block comment further down):
 //     MAX_WIDTH_FIELD.
@@ -95,6 +95,7 @@
 
 #include <cassert>
 #include <cinttypes>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -213,7 +214,7 @@ struct NoDefaultParams {
   static NoDefaultParams parse(
       const std::map<std::string, std::string> &params) {
     auto it = params.find("length");
-    return NoDefaultParams{std::stoll(it->second)};
+    return NoDefaultParams{std::strtoll(it->second.c_str(), nullptr, 0)};
   }
 
   static void to_strings(const NoDefaultParams &p,
@@ -243,7 +244,7 @@ bool no_default_resolve_params(const std::map<std::string, std::string> &params,
              "NO_DEFAULT_PARAM_TYPE length is required");
     return true;
   }
-  int64_t length = std::stoll(it->second);
+  int64_t length = std::strtoll(it->second.c_str(), nullptr, 0);
   if (length <= 0) {
     snprintf(error_msg, VEF_MAX_ERROR_LEN,
              "NO_DEFAULT_PARAM_TYPE length must be positive");
@@ -270,7 +271,7 @@ bool no_default_var_resolve_params(
              "NO_DEFAULT_VAR_PARAM_TYPE length is required");
     return true;
   }
-  int64_t length = std::stoll(it->second);
+  int64_t length = std::strtoll(it->second.c_str(), nullptr, 0);
   if (length <= 0) {
     snprintf(error_msg, VEF_MAX_ERROR_LEN,
              "NO_DEFAULT_VAR_PARAM_TYPE length must be positive");
@@ -311,7 +312,7 @@ struct LargeDecodeParams {
   static LargeDecodeParams parse(
       const std::map<std::string, std::string> &params) {
     auto it = params.find("length");
-    return LargeDecodeParams{std::stoll(it->second)};
+    return LargeDecodeParams{std::strtoll(it->second.c_str(), nullptr, 0)};
   }
 
   static void to_strings(const LargeDecodeParams &p,
@@ -341,7 +342,7 @@ bool large_decode_resolve_params(
              "LARGE_DECODE_TYPE length is required");
     return true;
   }
-  int64_t length = std::stoll(it->second);
+  int64_t length = std::strtoll(it->second.c_str(), nullptr, 0);
   if (length <= 0) {
     snprintf(error_msg, VEF_MAX_ERROR_LEN,
              "LARGE_DECODE_TYPE length must be positive");
@@ -499,7 +500,7 @@ struct PVecParams {
 
   static PVecParams parse(const std::map<std::string, std::string> &params) {
     auto it = params.find("dimension");
-    return PVecParams{std::stoll(it->second)};
+    return PVecParams{std::strtoll(it->second.c_str(), nullptr, 0)};
   }
 
   static void to_strings(const PVecParams &p,
@@ -527,7 +528,7 @@ bool pvec_resolve_params(const std::map<std::string, std::string> &params,
     snprintf(err, VEF_MAX_ERROR_LEN, "PVEC requires dimension parameter");
     return true;
   }
-  int64_t dim = std::stoll(it->second);
+  int64_t dim = std::strtoll(it->second.c_str(), nullptr, 0);
   if (dim <= 0 || dim > kPVecMaxDim) {
     snprintf(err, VEF_MAX_ERROR_LEN, "PVEC dimension must be 1..%" PRId64,
              kPVecMaxDim);
@@ -690,6 +691,48 @@ void pvec_norm_sq_result(const NormSqState &state, vsql::IntResult out) {
   out.set(state);
 }
 
+// real_sqrt / real_half_pi / real_avg pin down the result scale of a
+// REAL-returning VDF. Each produces a value with a fraction from arguments
+// that carry no scale of their own -- an INT parameter, or none at all -- so a
+// result that rounds to a whole number means the scale came from the
+// arguments rather than from the declared REAL return type.
+
+static void real_sqrt_impl(vsql::IntArg n, vsql::RealResult out) {
+  if (n.is_null()) {
+    out.set_null();
+    return;
+  }
+  out.set(std::sqrt(static_cast<double>(n.value())));
+}
+
+static void real_half_pi_impl(vsql::RealResult out) {
+  out.set(1.5707963267948966);
+}
+
+struct RealAvgState {
+  double sum;
+  int64_t count;
+};
+
+void real_avg_clear(RealAvgState &state) {
+  state.sum = 0;
+  state.count = 0;
+}
+
+void real_avg_accumulate(RealAvgState &state, vsql::IntArg n) {
+  if (n.is_null()) return;
+  state.sum += static_cast<double>(n.value());
+  state.count++;
+}
+
+void real_avg_result(const RealAvgState &state, vsql::RealResult out) {
+  if (state.count == 0) {
+    out.set_null();
+    return;
+  }
+  out.set(state.sum / static_cast<double>(state.count));
+}
+
 static constexpr const char kPVecTypeName[] = "PVEC";
 
 constexpr auto PVEC =
@@ -730,7 +773,8 @@ struct LenParam {
 
   static LenParam parse(const std::map<std::string, std::string> &params) {
     auto it = params.find("length");
-    return LenParam{it == params.end() ? 0 : std::stoll(it->second)};
+    return LenParam{
+        it == params.end() ? 0 : std::strtoll(it->second.c_str(), nullptr, 0)};
   }
 
   static void to_strings(const LenParam &p,
@@ -1059,11 +1103,19 @@ constexpr auto BAD_DEFAULT_LEN_TYPE =
         .intrinsic_default_str("SHORT")
         .build();
 
-// ---- Parameter-bound test types ------------------------------------------
+// ---- Parameter-bound and rewrite test types -----------------------------
 //
 //   OVERSIZED_PARAM_TYPE(N) - resolve_params resolves a persisted_length larger
 //                             than max_persisted_length; exercises the DDL-time
 //                             upper-bound check.
+//   ADD_PARAM_TYPE(N)       - uses the MUTATING resolve_params overload to fill
+//                             in a missing 'mode' default, so the server adopts
+//                             the enlarged set as canonical. Adding keys is
+//                             accepted.
+//   DROP_PARAM_TYPE(N)      - uses the MUTATING overload to erase every key
+//                             other than 'length'. Removing a parameter is
+//                             rejected at DDL time, so this type only works
+//                             when there is nothing to erase.
 
 // OVERSIZED_PARAM_TYPE: resolves to twice its max_persisted_length.
 constexpr int64_t kOversizedResolved = kParamTestSize * 2;
@@ -1089,7 +1141,55 @@ bool oversized_resolve_params(const std::map<std::string, std::string> &params,
   return false;
 }
 
+// ADD_PARAM_TYPE: mutating resolve_params that fills in a 'mode' default when
+// the user did not supply one. The enlarged map is what the server adopts as
+// canonical.
+bool add_int_to_params(int64_t value,
+                       std::map<std::string, std::string> &params, char *) {
+  params["length"] = std::to_string(value);
+  return false;
+}
+
+bool add_resolve_params(std::map<std::string, std::string> &params,
+                        vsql::ResolvedTypeParams *result, char *error_msg) {
+  if (params.find("length") == params.end()) {
+    snprintf(error_msg, VEF_MAX_ERROR_LEN, "ADD_PARAM_TYPE requires length");
+    return true;
+  }
+  if (params.find("mode") == params.end()) params["mode"] = "fast";
+  result->persisted_length = kParamTestSize;
+  result->max_decode_buffer_length = 16;
+  return false;
+}
+
+// DROP_PARAM_TYPE: mutating resolve_params that erases any key other than
+// 'length'. Erasing one the user wrote is rejected by the server.
+bool drop_int_to_params(int64_t value,
+                        std::map<std::string, std::string> &params, char *) {
+  params["length"] = std::to_string(value);
+  return false;
+}
+
+bool drop_resolve_params(std::map<std::string, std::string> &params,
+                         vsql::ResolvedTypeParams *result, char *error_msg) {
+  if (params.find("length") == params.end()) {
+    snprintf(error_msg, VEF_MAX_ERROR_LEN, "DROP_PARAM_TYPE requires length");
+    return true;
+  }
+  for (auto it = params.begin(); it != params.end();) {
+    if (it->first != "length")
+      it = params.erase(it);
+    else
+      ++it;
+  }
+  result->persisted_length = kParamTestSize;
+  result->max_decode_buffer_length = 16;
+  return false;
+}
+
 static constexpr const char kOversizedParamTypeName[] = "OVERSIZED_PARAM_TYPE";
+static constexpr const char kAddParamTypeName[] = "ADD_PARAM_TYPE";
+static constexpr const char kDropParamTypeName[] = "DROP_PARAM_TYPE";
 
 constexpr auto OVERSIZED_PARAM_TYPE =
     vsql::make_type<kOversizedParamTypeName>()
@@ -1099,6 +1199,32 @@ constexpr auto OVERSIZED_PARAM_TYPE =
         .params<LenParam, &LenParam::parse, &LenParam::to_strings>()
         .int_to_params<&oversized_int_to_params>()
         .resolve_params<&oversized_resolve_params>()
+        .from_string<&param_test_encode>()
+        .to_string<&param_test_decode>()
+        .compare<&param_test_compare>()
+        .build();
+
+constexpr auto ADD_PARAM_TYPE =
+    vsql::make_type<kAddParamTypeName>()
+        .persisted_length(-1)
+        .max_decode_buffer_length(16)
+        .max_persisted_length(kParamTestSize)
+        .params<LenParam, &LenParam::parse, &LenParam::to_strings>()
+        .int_to_params<&add_int_to_params>()
+        .resolve_params<&add_resolve_params>()
+        .from_string<&param_test_encode>()
+        .to_string<&param_test_decode>()
+        .compare<&param_test_compare>()
+        .build();
+
+constexpr auto DROP_PARAM_TYPE =
+    vsql::make_type<kDropParamTypeName>()
+        .persisted_length(-1)
+        .max_decode_buffer_length(16)
+        .max_persisted_length(kParamTestSize)
+        .params<LenParam, &LenParam::parse, &LenParam::to_strings>()
+        .int_to_params<&drop_int_to_params>()
+        .resolve_params<&drop_resolve_params>()
         .from_string<&param_test_encode>()
         .to_string<&param_test_decode>()
         .compare<&param_test_compare>()
@@ -1233,8 +1359,10 @@ VEF_GENERATE_ENTRY_POINTS(
         .type(DEFAULT_VDF_TYPE)
         .type(DEFAULT_PARAM_TYPE)
         .type(BAD_DEFAULT_LEN_TYPE)
-        // Parameter-bound test types
+        // Parameter-bound and rewrite test types
         .type(OVERSIZED_PARAM_TYPE)
+        .type(ADD_PARAM_TYPE)
+        .type(DROP_PARAM_TYPE)
         // Storage-size boundary test type
         .type(MAX_WIDTH_FIELD)
         .type(VAR_SETS_PERSISTED)
@@ -1257,4 +1385,18 @@ VEF_GENERATE_ENTRY_POINTS(
                   .param(PVEC)
                   .clear<&pvec_norm_sq_clear>()
                   .accumulate<&pvec_norm_sq_accumulate>()
+                  .build())
+        .func(make_func<&real_sqrt_impl>("real_sqrt")
+                  .returns(REAL)
+                  .param(INT)
+                  .build())
+        .func(make_func<&real_half_pi_impl>("real_half_pi")
+                  .returns(REAL)
+                  .no_params()
+                  .build())
+        .func(make_aggregate_func<RealAvgState, &real_avg_result>("real_avg")
+                  .returns(REAL)
+                  .param(INT)
+                  .clear<&real_avg_clear>()
+                  .accumulate<&real_avg_accumulate>()
                   .build()))

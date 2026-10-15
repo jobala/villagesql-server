@@ -80,6 +80,10 @@ bool TableTraits<ColumnEntry>::write_to_table(TABLE &table,
                   &my_charset_utf8mb4_bin);
 
   // type_parameters (field 6)
+  // TODO(villagesql-production): check store() returns, here and in the
+  // sibling systable TableTraits. It matters most for the JSON columns:
+  // Field_json::store raises ER_INVALID_JSON_TEXT on malformed input and we
+  // go on to write the row anyway.
   field[6]->store(entry.type_parameters.c_str(), entry.type_parameters.length(),
                   &my_charset_utf8mb4_bin);
 
@@ -116,9 +120,6 @@ bool TableTraits<ColumnEntry>::update_in_table(TABLE &table,
   key_copy(key_buf, table.record[0], table.key_info,
            table.key_info->key_length);
 
-  // Save old record for update
-  store_record(&table, record[1]);
-
   // Find the row using index read
   int error = table.file->ha_index_init(0, false);
   if (error) {
@@ -129,8 +130,7 @@ bool TableTraits<ColumnEntry>::update_in_table(TABLE &table,
   auto index_end_guard =
       create_scope_guard([&table]() { table.file->ha_index_end(); });
 
-  error = table.file->ha_index_read_map(table.record[0], key_buf, HA_WHOLE_KEY,
-                                        HA_READ_KEY_EXACT);
+  error = read_row_for_update(table, key_buf);
   if (error) {
     LogVSQL(ERROR_LEVEL, "Failed to find row for update: error %d", error);
     return true;

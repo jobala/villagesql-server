@@ -47,6 +47,7 @@
 #include "sql/table.h"
 #include "sql/thd_raii.h"
 #include "sql/transaction.h"
+#include "villagesql/include/byteorder.h"
 #include "villagesql/include/error.h"
 #include "villagesql/include/version.h"
 #include "villagesql/schema/systable/helpers.h"
@@ -727,7 +728,8 @@ bool SchemaManager::upgrade_villagesql_schema(THD *thd) {
   // maybe_install_villagesql_schema_on_first_run(), which runs after this, so
   // there is nothing to check or upgrade here.
   //
-  // TODO(villagesql-ga): support upgrading a data directory across code bases.
+  // TODO(villagesql-production): support upgrading a data directory across code
+  // bases.
   if (current_villagesql_version.is_valid() &&
       current_villagesql_version.code_base() !=
           target_villagesql_version.code_base()) {
@@ -867,13 +869,16 @@ bool SchemaManagerStatus::read_villagesql_version(THD *thd, Semver *version) {
     return false;  // Success, but exists=false will trigger full initialization
   }
 
-  // The value is not text, it is an integer, so we need to read the raw binary..
+  // The value is not text, it is an integer, so we need to read the raw binary.
   if (schema_id_str.length() != sizeof(uint64_t)) {
     LogVSQL(ERROR_LEVEL, "Read unexpected sized value");
     return true;
   }
 
-  const uint64_t schema_id = uint8korr(schema_id_str.data());
+  const uint64_t schema_id = ulonglongget(schema_id_str.data());
+
+  LogVSQL(INFORMATION_LEVEL,
+          "VillageSQL schema_id in mysql.schemata: %" PRIu64 "", schema_id);
 
   // Schema exists, check if properties table exists, which should be the last
   // table created in the schema file
